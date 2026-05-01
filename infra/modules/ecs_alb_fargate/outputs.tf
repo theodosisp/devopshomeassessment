@@ -37,3 +37,8 @@ output "target_group_arn" {
   value       = aws_lb_target_group.this.arn
   description = "ALB target group ARN."
 }
+
+output "task_definition_family" {
+  value       = aws_ecs_task_definition.this.family
+  description = "Family name for ecs describe/register-task-definition."
+}

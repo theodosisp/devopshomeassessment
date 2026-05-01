@@ -26,6 +26,10 @@ output "ecs_service_name" {
   value       = module.ecs_api.service_name
 }
 
+output "ecs_task_definition_family" {
+  value       = module.ecs_api.task_definition_family
+}
+
 output "rds_identifier_stub" {
   value       = var.rds_identifier_stub
   description = "STUB — no RDS instance exists."

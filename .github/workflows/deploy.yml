@@ -1,0 +1,96 @@
+# Part 4 — gated promotion (manual dispatch).
+# GitHub Environments: create "staging" and "production" with required reviewers (Settings → Environments).
+# Variables / secrets: see README checklist.
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to deploy"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: "ECR image tag (12-char SHA from CI)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY_STAGING: devops-assessment-staging-api
+  ECR_REPOSITORY_PROD: devops-assessment-prod-api
+
+jobs:
+  deploy:
+    name: Deploy (${{ inputs.target }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target == 'staging' && 'staging' || 'production' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (staging OIDC)
+        if: inputs.target == 'staging'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials (production OIDC)
+        if: inputs.target == 'production'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve ECS identifiers
+        id: ids
+        run: |
+          if [ "${{ inputs.target }}" = "staging" ]; then
+            echo "cluster=${{ vars.ECS_CLUSTER_STAGING }}" >> "$GITHUB_OUTPUT"
+            echo "service=${{ vars.ECS_SERVICE_STAGING }}" >> "$GITHUB_OUTPUT"
+            echo "family=${{ vars.TASK_FAMILY_STAGING }}" >> "$GITHUB_OUTPUT"
+            echo "repo=${{ env.ECR_REPOSITORY_STAGING }}" >> "$GITHUB_OUTPUT"
+            echo "alb=${{ vars.STAGING_ALB_DNS }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "cluster=${{ vars.ECS_CLUSTER_PRODUCTION }}" >> "$GITHUB_OUTPUT"
+            echo "service=${{ vars.ECS_SERVICE_PRODUCTION }}" >> "$GITHUB_OUTPUT"
+            echo "family=${{ vars.TASK_FAMILY_PRODUCTION }}" >> "$GITHUB_OUTPUT"
+            echo "repo=${{ env.ECR_REPOSITORY_PROD }}" >> "$GITHUB_OUTPUT"
+            echo "alb=${{ vars.PROD_ALB_DNS }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy new task definition (roll forward)
+        env:
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ steps.ids.outputs.repo }}:${{ inputs.image_tag }}
+        run: |
+          chmod +x scripts/ecs-deploy.sh
+          ./scripts/ecs-deploy.sh \
+            "${{ steps.ids.outputs.cluster }}" \
+            "${{ steps.ids.outputs.service }}" \
+            "$IMAGE_URI" \
+            "${{ steps.ids.outputs.family }}"
+
+      - name: Wait for ECS steady state
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ steps.ids.outputs.cluster }}" \
+            --services "${{ steps.ids.outputs.service }}"
+
+      - name: Health check via ALB (/healthz)
+        run: |
+          curl -fsS --retry 5 --retry-delay 3 "http://${{ steps.ids.outputs.alb }}/healthz"
+
+      # Rollback: bash scripts/ecs-rollback.sh CLUSTER SERVICE arn:aws:ecs:...:task-definition/family:REV

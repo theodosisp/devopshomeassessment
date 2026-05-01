@@ -1,22 +1,17 @@
 # DevOps Home Assessment (v4.4)
 
-This repository contains Terraform for **Part 1** (CDN module) and **Part 2** (staging + production on AWS), **Part 3** pipeline RCA + fixed CI, plus submission artifacts.
+This repository contains **Parts 1–6** of the DevOps Home Assessment (v4.4): Terraform, CI/CD (OIDC, Trivy, semver tags), gated **deploy** workflow, ops/security/cost docs.
 
 ## Layout
 
-- `infra/modules/cdn` — S3 + CloudFront (OAC, private bucket, HTTPS redirect) + Part 1 bug notes
-- `infra/modules/network` — Isolated VPC (2 AZs, public + private subnets, single NAT)
-- `infra/modules/ecr` — Container registry with scan-on-push
-- `infra/modules/ecs_alb_fargate` — ALB + ECS Fargate (443 not configured — HTTP :80 for bootstrap; swap image in Part 4)
-- `infra/modules/waf_cloudfront` — WAFv2 **CLOUDFRONT** scope (must use **us-east-1** provider in root module)
-- `infra/modules/iam_github_oidc` — GitHub Actions deploy role (ECR + ECS + `iam:PassRole`)
-- `infra/envs/part1` — Standalone test of the CDN module
-- `infra/envs/prod` — Full prod stack (includes WAF on CloudFront + creates GitHub **OIDC provider** once per account)
-- `infra/envs/staging` — Mirrored at smaller Fargate size; **no WAF**; reuses existing OIDC provider
-- `submission/` — e.g. Part 1 plan output
-- `docs/PART3_PIPELINE_DEBUG.md` — Part 3 root causes, dependency chain, fix order
-- `Dockerfile` + `app/nginx/` — minimal container with **`GET /healthz` → 200** for CI/ECS
-- `.github/workflows/ci.yml` — corrected staging build + Trivy (OIDC + repo-root build context)
+- `infra/modules/*`, `infra/envs/{part1,staging,prod}` — infrastructure as code
+- `docs/PART3_PIPELINE_DEBUG.md` — Part 3 pipeline RCA
+- `Dockerfile`, `app/nginx/` — **`GET /healthz` → 200**
+- `.github/workflows/ci.yml` — build, smoke test, Trivy, push **SHA + semver** tags
+- `.github/workflows/deploy.yml` — manual deploy + environment gates + `/healthz` check
+- `scripts/ecs-deploy.sh`, `scripts/ecs-rollback.sh` — ECS roll forward / rollback
+- `SECURITY.md`, `COST_NOTES.md`, `dashboards.md`, `ON-CALL.md` — Part 5–6 deliverables
+- `submission/` — Part 1 plan artifact
 
 ## Remote state (required for Part 2)
 
@@ -71,16 +66,50 @@ After apply, read outputs (ALB DNS, ECR URL, deploy role ARNs) with `terraform o
 
 ## Part 3 — CI debug (completed)
 
-See **`docs/PART3_PIPELINE_DEBUG.md`** for the write-up. Configure GitHub secret **`AWS_ROLE_ARN_STAGING`** from staging Terraform output before expecting green CI on `main`.
+See **`docs/PART3_PIPELINE_DEBUG.md`**. Set GitHub secret **`AWS_ROLE_ARN_STAGING`** from `terraform output github_deploy_role_arn_staging` before CI can assume AWS.
 
-## How CI artifacts flow into deploy (preview for Parts 4–5)
+## Parts 4–6 — CI/CD, gates, docs (completed)
 
-1. **GitHub Actions** builds a container image and tags it with **git SHA** (and optionally SemVer).
-2. **OIDC** — workflow assumes **`AWS_ROLE_ARN`** for **staging** or **prod** (`terraform output` deploy roles). No long-lived AWS keys in GitHub.
-3. **ECR** — `docker push` to the environment’s repository URL from outputs.
-4. **ECS** — pipeline registers a new task definition revision (container image = pushed digest/tag) and calls **`ecs:UpdateService`**. This repo sets **`lifecycle { ignore_changes = [task_definition] }`** on the ECS service so Terraform **does not fight** CI-driven task definition updates after bootstrap.
+### CI (`ci.yml`)
 
-The **`rds_identifier_stub`** variables are **documentation-only stubs** — no RDS resources are created here.
+1. Checkout → **OIDC** AWS credentials → **ECR login**
+2. **`docker build`** at repo root (Dockerfile present)
+3. **Smoke test** running container → **`curl /healthz`**
+4. **Trivy** scan (`HIGH`, `CRITICAL` fail build)
+5. On **`push` to `main`**: push image tags **`:<12-char-sha>`** and **`1.0.<run_number>`** (semver-style)
+
+### Deploy (`deploy.yml`)
+
+- Trigger: **`workflow_dispatch`** — choose **staging** or **production**, enter **`image_tag`** (the 12-char SHA printed by CI).
+- Uses GitHub **Environments** `staging` / `production` — add **required reviewers** under repo **Settings → Environments** for manual gates.
+- Steps: OIDC → **register task definition** (`scripts/ecs-deploy.sh`) → **wait services-stable** → **`curl` ALB `/healthz`**.
+
+### Rollback (one command)
+
+```bash
+bash scripts/ecs-rollback.sh "$CLUSTER" "$SERVICE" "$PREVIOUS_TASK_DEF_ARN"
+```
+
+### GitHub configuration checklist
+
+| Name | Type | Example source |
+|------|------|----------------|
+| `AWS_ROLE_ARN_STAGING` | Secret | `terraform output -raw github_deploy_role_arn_staging` |
+| `AWS_ROLE_ARN_PROD` | Secret | `terraform output -raw github_deploy_role_arn_prod` |
+| `ECS_CLUSTER_STAGING` | Variable | `terraform output -raw` → `ecs_cluster_name` (staging env) |
+| `ECS_SERVICE_STAGING` | Variable | service name |
+| `TASK_FAMILY_STAGING` | Variable | `devops-assessment-staging-task` |
+| `STAGING_ALB_DNS` | Variable | ALB DNS hostname (no `http://`) |
+| `ECS_CLUSTER_PRODUCTION` | Variable | prod cluster |
+| `ECS_SERVICE_PRODUCTION` | Variable | prod service |
+| `TASK_FAMILY_PRODUCTION` | Variable | `devops-assessment-prod-task` |
+| `PROD_ALB_DNS` | Variable | prod ALB DNS |
+
+Replace `devops-assessment-*` prefixes if you changed `project` / `environment` in Terraform.
+
+### RDS stub
+
+The **`rds_identifier_stub`** variables are **documentation-only** — no RDS instances are created here.
 
 ## Key decisions (tradeoffs)
 

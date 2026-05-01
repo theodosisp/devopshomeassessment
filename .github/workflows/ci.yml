@@ -48,6 +48,19 @@ jobs:
           echo "tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           docker build -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:${SHORT_SHA}" .
 
+      # Part 4 — smoke test /healthz before scan (same image as deploy gate)
+      - name: Smoke test container locally
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          IMG="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          CID=$(docker run -d -p 18080:80 "$IMG")
+          sleep 2
+          curl -fsS "http://127.0.0.1:18080/healthz"
+          docker rm -f "$CID"
+
       # Not a third root cause: Trivy failed because docker build produced no image
       - name: Scan image with Trivy
         env:
@@ -60,11 +73,16 @@ jobs:
             --exit-code 1 --severity HIGH,CRITICAL \
             "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-      - name: Push image to ECR
+      # Part 4 — publish SHA + SemVer-style tag (1.0.<run_number>)
+      - name: Push image to ECR (SHA + semver tags)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ steps.build.outputs.tag }}
         run: |
-          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          SEMVER="1.0.${GITHUB_RUN_NUMBER}"
+          IMG="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker tag "$IMG" "${ECR_REGISTRY}/${ECR_REPOSITORY}:${SEMVER}"
+          docker push "$IMG"
+          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${SEMVER}"
