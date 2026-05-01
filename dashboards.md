@@ -1,19 +1,19 @@
-# Monitoring sketch
+# Observability
 
-Rough targets from the brief:
+Target indicators aligned with the assessment brief:
 
-- Keep monthly availability roughly **99.9%** — we’d measure off ALB (target 5xx vs accepted requests), not gut feeling.
-- **`GET /healthz`** through the ALB should stay under ~**300 ms at P95** once there’s real traffic to measure.
+- Monthly API availability around **99.9%**, derived from Application ELB metrics (for example target 5xx versus accepted requests).
+- **P95 latency** for `GET /healthz` through the ALB below **300 ms** once sufficient traffic exists for measurement.
 
-## Dashboard
+## CloudWatch dashboard
 
-Below is a barebones CloudWatch dashboard JSON — swap `REPLACE` with your actual ALB dimension (`LoadBalancer` full name). Save locally then:
+The JSON below is a minimal dashboard template. Replace `REPLACE` with the full `LoadBalancer` dimension for your environment. Save as `cw-dashboard-devops-assessment.json`, then create the dashboard:
 
 ```bash
 aws cloudwatch put-dashboard --dashboard-name DevOpsAssessment-API --dashboard-body file://cw-dashboard-devops-assessment.json
 ```
 
-Two widgets: P95 latency and 5xx count on the ALB. Enough to stare at during a deploy.
+Widgets cover ALB target response time (P95) and target 5xx counts.
 
 ```json
 {
@@ -26,7 +26,7 @@ Two widgets: P95 latency and 5xx count on the ALB. Enough to stare at during a d
         ],
         "period": 60,
         "region": "eu-central-1",
-        "title": "ALB /healthz P95 (staging — rename me)",
+        "title": "ALB target response time P95 (staging)",
         "yAxis": { "left": { "min": 0 } }
       }
     },
@@ -38,18 +38,18 @@ Two widgets: P95 latency and 5xx count on the ALB. Enough to stare at during a d
         ],
         "period": 60,
         "region": "eu-central-1",
-        "title": "Target 5xx"
+        "title": "Target 5xx count"
       }
     }
   ]
 }
 ```
 
-## Alarms worth wiring
+## Alarms
 
-**SLO-ish composite** — CloudWatch composite alarm tying together “too many 5xx” and “latency blew past budget”. Exact metric math depends how you define error budget; starting point is two underlying alarms then OR them.
+**Composite alarm for SLO burn** — Combine alarms on elevated 5xx rate and high latency using a CloudWatch composite alarm. Underlying alarm names and ARNs depend on your setup.
 
-Snippet idea (you’ll fix ARNs / alarm names):
+Example outline:
 
 ```bash
 aws cloudwatch put-composite-alarm \
@@ -58,6 +58,6 @@ aws cloudwatch put-composite-alarm \
   --alarm-actions arn:aws:sns:eu-central-1:ACCOUNT:devops-alerts
 ```
 
-**5-minute error budget hack** — alarm when bad responses spike relative to traffic. Usually needs `MetricMath` in a JSON file for `--metrics`; I didn’t check in a working example because dimensions differ per account.
+**Error rate over five minutes** — Typically implemented with MetricMath comparing 5xx to total requests; dimensions vary by account. Store metric definitions in a JSON file passed to `put-metric-alarm`.
 
-**Cost** — billing metrics in CloudWatch lag and hurt my brain. Prefer AWS Budgets + SNS (see `COST_NOTES.md`) for “we spent too much today” vibes.
+**Cost** — AWS Budgets with SNS (see `COST_NOTES.md`) is often clearer than relying solely on CloudWatch billing metrics, which can lag.

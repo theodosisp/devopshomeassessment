@@ -1,40 +1,40 @@
-# Cost / perf scribbles
+# Cost and performance
 
-Quick comparison we’d actually have in a design doc — nothing authoritative.
+Short comparison of edge options for a small HTTP service.
 
-## How traffic hits the app
+## Routing options
 
-**ALB + ECS** — what we built. You pay for the load balancer hour-by-hour plus LCU usage. Health checks are straightforward and ECS hooks up without gymnastics. Fine for a small API behind `/healthz`.
+**Application Load Balancer with ECS** — Currently used. Billing includes the load balancer hourly charge and LCU usage. Health checks integrate cleanly with ECS and Fargate.
 
-**API Gateway in front of Lambda or ECS** — nice when you care about per-request billing or JWT validation at the edge. Adds complexity (and cold starts if you go Lambda) that we didn’t need for this repo.
+**API Gateway with Lambda or ECS** — Useful when fine-grained auth or per-request billing matters more; adds operational complexity compared to a plain ALB for this workload.
 
-**CloudFront-only** — great when it’s mostly static files. Not really a replacement for a container API unless you’re okay bolting Lambda@Edge / weird routing on top.
+**CloudFront alone** — Appropriate mainly for static content. Serving a container API typically requires additional patterns (for example Lambda@Edge or other routing).
 
-So ALB + Fargate it is.
+For this project, ALB with ECS Fargate is a straightforward fit.
 
 ## Autoscaling
 
-Didn’t bake autoscaling resources into Terraform yet — call it a stub. When metrics exist, target-tracking on CPU (~70%) or requests-per-task is the boring default. Cooldowns around 60s scale-out / 300s scale-in so it doesn’t flap every traffic blip.
+Application Auto Scaling for ECS is not fully implemented in Terraform here; it can be added later. A typical approach is target tracking on CPU (for example around 70%) or requests per target once baseline metrics exist. Use separate cooldowns for scale-out and scale-in to reduce oscillation.
 
-## Caching static assets
+## Static assets
 
-CloudFront side uses AWS managed cache policies for the CDN behaviour. For JS/CSS, ship hashed filenames (`app.a1b2c3.js`) so you can crank TTLs without cache poisoning scare stories.
+CloudFront uses managed cache behaviours for static content. Use content hashing in filenames for long cache TTLs without serving stale application bundles.
 
-## Money alarms
+## Budgets
 
-Budgets in AWS (monthly cap + SNS email at ~80% and 100%) beat staring at the billing console on Sundays.
+Configure AWS Budgets with notifications (for example at 80% and 100% of a monthly limit) and SNS or email subscribers.
 
-If finance calls panicking, flip the production GitHub Environment to “nobody deploys until we talk” — low-tech but works. Wiring EventBridge to auto-disable webhooks is overkill until it isn’t.
+When cost thresholds are breached, pause production deployments via GitHub Environment protection or process until the cause is understood. Automated responses (for example EventBridge) can be added if needed.
 
-### Budget CLI skeleton
+### Example budget CLI
 
-Replace account IDs / emails before running:
+Replace account identifiers and notification endpoints before use:
 
 ```bash
 aws budgets create-budget --account-id YOUR_ACCOUNT_ID --budget file://budget.json --notifications-with-subscribers file://budget-notifications.json
 ```
 
-Example `budget.json` shape:
+Example `budget.json`:
 
 ```json
 {

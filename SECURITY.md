@@ -1,31 +1,29 @@
-# Security notes
-
-Nothing fancy here — just how we actually wired things.
+# Security
 
 ## IAM
 
-ECS tasks use the normal execution role (`AmazonECSTaskExecutionRolePolicy`) so they can pull images and send logs. The task role is basically empty on purpose; once the app talks to AWS APIs we’d tighten that down instead of handing it `*` on day one.
+ECS tasks use the standard execution role (`AmazonECSTaskExecutionRolePolicy`) for pulling images and writing logs. The task role is intentionally minimal until the application requires AWS API access; extend it with scoped policies rather than broad permissions.
 
-For GitHub Actions we leaned on OIDC (`token.actions.githubusercontent.com`). Deploy roles only trust this repo’s subjects, and the policies stay narrow: ECR push/pull where needed, ECS describe/update, PassRole only for the execution + task roles Terraform created. If someone copies this stack, update the trust `sub` pattern so another fork doesn’t inherit access.
+GitHub Actions uses OIDC (`token.actions.githubusercontent.com`). Deploy roles trust only subjects for this repository. Policies limit ECR and ECS actions to what deployment needs and allow `iam:PassRole` only for the execution and task roles created by Terraform. If you fork or reuse this configuration, update the trust policy `sub` pattern accordingly.
 
 ## Secrets
 
-We’re not parking IAM user keys in GitHub Secrets for the pipelines described here — just the role ARNs and OIDC doing the rest.
+CI/CD uses IAM role ARNs with OIDC rather than long-lived IAM user access keys stored in GitHub.
 
-Anything application-level later belongs in Secrets Manager (or SSM Parameter Store if you prefer) and gets wired through the task definition. Nothing sensitive lives in the repo.
+Application secrets should live in AWS Secrets Manager or Parameter Store and be referenced from the task definition. Do not commit secrets to the repository.
 
-## Images
+## Container images
 
-CI runs Trivy with HIGH/CRITICAL as hard failures. ECR also scans on push because Terraform enabled it on the repos — redundant but I’d rather get yelled at twice than ship something obviously broken.
+CI runs Trivy with HIGH and CRITICAL severities failing the build. ECR repositories created by Terraform have image scanning on push enabled.
 
-## TLS / HTTP
+## TLS
 
-CloudFront forces HTTPS at the edge for the static stuff.
+CloudFront is configured to redirect HTTP to HTTPS for static content.
 
-The ALB path is still HTTP on port 80 in this repo — it was faster to stand up for the exercise. Real prod hardening would be ACM on the ALB, HTTPS listener, redirect 80→443. Leaving this note so nobody assumes “we’re done” just because CloudFront is locked down.
+The Application Load Balancer currently exposes HTTP on port 80 for the bootstrap setup. Production hardening should add an ACM certificate, an HTTPS listener, and redirect HTTP to HTTPS on the ALB.
 
 ## WAF
 
-Prod CloudFront sits behind the usual AWS managed bundles (`CommonRuleSet`, `KnownBadInputs`). If we ever carve out a noisy rule, document it here — future me won’t remember why we excluded something.
+Production CloudFront is associated with AWS managed rule groups (`AWSManagedRulesCommonRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet`). Document any rule exclusions or overrides here for future reference.
 
-Staging doesn’t run WAF. Cheaper, faster iterations, and honestly lower stakes — but the URL *can* still get probed, so don’t treat staging like a vault.
+Staging does not use WAF in order to reduce cost and iteration friction. Staging endpoints should not be treated as equivalent to production from a security perspective.

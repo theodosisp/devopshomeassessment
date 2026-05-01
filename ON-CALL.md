@@ -1,32 +1,36 @@
-# When things break (and DR thoughts)
+# Operations, backup, and on-call
 
 ## Database
 
-There isn’t one in this repo — `rds_identifier_stub` is literally a text placeholder. If we had Postgres/RDS anyway: turn on automated backups, keep retention sane for your compliance story, test restores into staging once in a while so you’re not learning backup restoration during a production fire.
+No RDS instance is deployed in this repository; `rds_identifier_stub` is a placeholder variable only.
 
-## Static tier / CloudFront
+If a relational database were introduced: enable automated backups with retention aligned to policy, consider point-in-time recovery where supported, and verify restores periodically (for example into a non-production environment).
 
-If the primary S3 origin dies, an origin group with a standby bucket (or another regional endpoint) is the boring DR pattern for static content. Terraform state for all this lives in S3 with Dynamo locking — version the bucket, encrypt it, don’t hand-delete objects when you’re tired.
+## Disaster recovery (static tier)
 
-## First 15 minutes after a page
+For static content behind CloudFront, origin failover via an origin group (secondary S3 bucket or endpoint) is a common pattern.
 
-1. Acknowledge you saw the alert — nobody likes screaming into void Slack forever.
-2. Figure out *where* it hurts: CloudFront vs ALB vs ECS vs something downstream. CloudWatch ALB metrics + ECS events + “what did we ship last” usually answer that fast.
-3. If it smells like a bad deploy, roll ECS back (`scripts/ecs-rollback.sh` with the last known-good task def ARN) before you chase ghosts in application code.
-4. Post something short in the incident channel: what’s broken, who’s looking, when you’ll update again.
+Terraform state is stored remotely (S3 with versioning recommended; DynamoDB for locking). Protect the state bucket with encryption and lifecycle policies; avoid destructive operations on state objects outside controlled procedures.
 
-Blurb you can paste (edit times):
+## First response after an alert
 
-> Seeing elevated 5xx on `<env>` ALB since ~HH:MM UTC. Investigating. Next note in ~15m unless we’ve fixed it.
+1. Acknowledge the incident in the agreed channel or tooling.
+2. Narrow scope: CloudFront, load balancer, ECS, or downstream dependency. Use CloudWatch metrics for the ALB, ECS service events, and recent deployments as primary signals.
+3. If a deployment is suspected, consider rolling back the ECS service using `scripts/ecs-rollback.sh` with the last known-good task definition ARN before deeper application debugging.
+4. Post a short status update: impact, owner, and next update time.
 
-Rollback reminder:
+Example stakeholder message (adjust timestamps and environment):
+
+> Elevated 5xx responses observed on `<environment>` ALB since HH:MM UTC. Under investigation. Next update in approximately 15 minutes.
+
+Rollback command:
 
 ```bash
 bash scripts/ecs-rollback.sh "$CLUSTER" "$SERVICE" "$PREVIOUS_TASK_DEF_ARN"
 ```
 
-Then hit `http://<alb-dns>/healthz` yourself — don’t trust green CI alone.
+Confirm `GET /healthz` on the load balancer DNS after rollback.
 
-## After it’s over
+## Post-incident review
 
-Short retro beats nothing: timeline, root cause (including “we shipped fast without tests”), what helped, what didn’t, action items with owners. Doesn’t need to be a novel.
+Document timeline, root cause, corrective actions, and follow-up tasks with owners. A concise summary is sufficient for smaller incidents.

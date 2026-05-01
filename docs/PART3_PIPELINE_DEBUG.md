@@ -1,35 +1,35 @@
-# Part 3 — what broke in that staging workflow
+# Part 3 — Pipeline failure analysis
 
-The pdf threw three red blocks in one run. Two were real bugs; the third was basically fallout.
+The failing GitHub Actions run reported three errors. Two were independent root causes; the third followed from the failed Docker build.
 
-## What the logs said
+## Log excerpts
 
-1. Docker couldn’t open `Dockerfile` — classic wrong directory or file never committed.
-2. Trivy complained there was no image locally.
-3. `aws ecr get-login-password` blew up with an expired security token.
+1. Docker build: `failed to read dockerfile: open Dockerfile: no such file or directory`
+2. Trivy: `FATAL image not found in local store`
+3. Amazon ECR login: `The security token included in the request is expired`
 
-## Actually broken
+## Root causes
 
-**Build context.** Either the workflow `cd`’d somewhere without a Dockerfile, or the Dockerfile wasn’t in git at all. Until that’s fixed there is nothing for Docker to build.
+**Build context.** The workflow executed `docker build` without a `Dockerfile` in the working directory, or the file was not present in the committed repository.
 
-**AWS auth.** Whatever credentials the job used for ECR were stale — old access keys in secrets, expired OIDC session assumptions, whatever. Fix is usually “stop using long-lived keys in CI” and wire OIDC + `configure-aws-credentials` like a normal person.
+**AWS credentials.** The credentials used for `aws ecr get-login-password` were no longer valid (expired session, rotated keys, or equivalent). The intended correction is short-lived credentials via GitHub OIDC and `aws-actions/configure-aws-credentials`, avoiding static keys in CI where possible.
 
-## The Trivy line isn’t a separate mystery
+## Dependent failure
 
-Trivy scans an image tag that should exist on disk after `docker build`. If build never ran, there is no image — so it errors out with “not in local store”. Fixing only AWS login doesn’t magically materialise an image; fixing only Dockerfile doesn’t help push if auth is still dead.
+Trivy scans a container image that must exist locally after `docker build`. If the build step fails, no image is present and Trivy reports that nothing is available to scan. Addressing only authentication does not create an image; addressing only the Dockerfile does not fix push until credentials are valid.
 
-Order that actually works: get code on the runner → assume AWS via OIDC → `docker build` from the folder that has the Dockerfile → then Trivy → then push.
+Recommended step order: checkout, configure AWS credentials (OIDC), Amazon ECR login, `docker build` from the directory that contains the `Dockerfile`, Trivy, then image push.
 
-## What landed in this repo
+## Changes in this repository
 
-- `Dockerfile` at the repo root so `docker build .` isn’t lying.
-- `app/nginx/default.conf` answering `/healthz` with 200 (same thing the ALB checks later).
-- `ci.yml` reordered around OIDC + build + scan.
+- `Dockerfile` at repository root so the default build context works.
+- `app/nginx/default.conf` responds with HTTP 200 on `GET /healthz` for health checks.
+- `.github/workflows/ci.yml` updated to follow the sequence above.
 
-Before CI goes green you’ll need `AWS_ROLE_ARN_STAGING` in GitHub from Terraform output. Workflow also needs `id-token: write` permissions or OIDC silently frustrates you.
+Store `AWS_ROLE_ARN_STAGING` in GitHub Actions secrets from Terraform staging outputs. The workflow must include `permissions: id-token: write` for OIDC.
 
-Quick sanity check before you submit the write-up:
+Verification checklist:
 
-- `docker build` path matches where the file lives.
-- AWS creds aren’t expiring mid-pipeline.
-- Trivy runs after a successful build, not before.
+- `docker build` uses a path where `Dockerfile` exists.
+- AWS authentication for CI is non-expiring under normal OIDC use.
+- Trivy runs after a successful build.
