@@ -1,0 +1,70 @@
+# Part 3 fix + Part 4 baseline CI
+# Fixes: (1) docker build from repo root where Dockerfile lives
+#        (2) AWS OIDC instead of expired static credentials for ECR
+#        (3) Trivy runs after build so an image exists locally
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # required for AWS OIDC
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: devops-assessment-staging-api
+
+jobs:
+  build-scan-staging:
+    name: Build, scan (staging)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Root cause B: use GitHub OIDC → IAM role (short-lived), not expired keys
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image (root cause A: Dockerfile at repo root; context is ".")
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          echo "tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          docker build -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:${SHORT_SHA}" .
+
+      # Not a third root cause: Trivy failed because docker build produced no image
+      - name: Scan image with Trivy
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasecurity/trivy:latest image \
+            --exit-code 1 --severity HIGH,CRITICAL \
+            "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+      - name: Push image to ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"

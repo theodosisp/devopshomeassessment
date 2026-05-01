@@ -1,6 +1,6 @@
 # DevOps Home Assessment (v4.4)
 
-This repository contains Terraform for **Part 1** (CDN module) and **Part 2** (staging + production on AWS), plus submission artifacts. CI workflows and app code follow in later parts.
+This repository contains Terraform for **Part 1** (CDN module) and **Part 2** (staging + production on AWS), **Part 3** pipeline RCA + fixed CI, plus submission artifacts.
 
 ## Layout
 
@@ -14,6 +14,9 @@ This repository contains Terraform for **Part 1** (CDN module) and **Part 2** (s
 - `infra/envs/prod` — Full prod stack (includes WAF on CloudFront + creates GitHub **OIDC provider** once per account)
 - `infra/envs/staging` — Mirrored at smaller Fargate size; **no WAF**; reuses existing OIDC provider
 - `submission/` — e.g. Part 1 plan output
+- `docs/PART3_PIPELINE_DEBUG.md` — Part 3 root causes, dependency chain, fix order
+- `Dockerfile` + `app/nginx/` — minimal container with **`GET /healthz` → 200** for CI/ECS
+- `.github/workflows/ci.yml` — corrected staging build + Trivy (OIDC + repo-root build context)
 
 ## Remote state (required for Part 2)
 
@@ -65,6 +68,10 @@ terraform plan -out=tfplan
 ```
 
 After apply, read outputs (ALB DNS, ECR URL, deploy role ARNs) with `terraform output`.
+
+## Part 3 — CI debug (completed)
+
+See **`docs/PART3_PIPELINE_DEBUG.md`** for the write-up. Configure GitHub secret **`AWS_ROLE_ARN_STAGING`** from staging Terraform output before expecting green CI on `main`.
 
 ## How CI artifacts flow into deploy (preview for Parts 4–5)
 
