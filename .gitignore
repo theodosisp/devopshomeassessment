@@ -1,0 +1,15 @@
+# OS / editor
+Thumbs.db
+Desktop.ini
+*.swp
+
+# Terraform (local runs)
+**/.terraform/
+**/tfplan
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/terraform.tfvars.example
+
+# Keep lockfiles committed for reproducible init
+!**/.terraform.lock.hcl

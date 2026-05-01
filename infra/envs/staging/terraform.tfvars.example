@@ -1,0 +1,12 @@
+aws_region              = "eu-central-1"
+project                 = "devops-assessment"
+environment             = "staging"
+vpc_cidr                = "10.10.0.0/16"
+static_site_bucket_name = "yourname-devops-assessment-staging-static-2026-unique"
+github_org              = "theodosisp"
+github_repo             = "devopshomeassessment"
+ecr_repository_name     = "devops-assessment-staging-api"
+task_cpu                = 256
+task_memory             = 512
+health_check_path       = "/"
+rds_identifier_stub     = "devops-assessment-staging-db-not-created"

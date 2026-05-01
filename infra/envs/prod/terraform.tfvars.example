@@ -1,0 +1,13 @@
+aws_region                = "eu-central-1"
+project                   = "devops-assessment"
+environment               = "prod"
+vpc_cidr                  = "10.20.0.0/16"
+static_site_bucket_name   = "yourname-devops-assessment-prod-static-2026-unique"
+github_org                = "theodosisp"
+github_repo               = "devopshomeassessment"
+ecr_repository_name       = "devops-assessment-prod-api"
+bootstrap_container_image = "public.ecr.aws/docker/library/nginx:alpine"
+task_cpu                  = 512
+task_memory               = 1024
+health_check_path         = "/"
+rds_identifier_stub       = "devops-assessment-prod-db-not-created"
