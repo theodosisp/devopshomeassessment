@@ -1,42 +1,32 @@
-# Backups, DR & on-call (Part 6)
+# When things break (and DR thoughts)
 
-## RDS (hypothetical — not provisioned here)
+## Database
 
-If a database existed:
+There isn’t one in this repo — `rds_identifier_stub` is literally a text placeholder. If we had Postgres/RDS anyway: turn on automated backups, keep retention sane for your compliance story, test restores into staging once in a while so you’re not learning backup restoration during a production fire.
 
-| Topic | Recommendation |
-|------|------------------|
-| **Backup frequency** | Automated backups daily + **PITR** if supported |
-| **Retention** | 7–35 days per compliance |
-| **Restore test** | Quarterly restore into staging VPC |
+## Static tier / CloudFront
 
-## DR concept — CloudFront
+If the primary S3 origin dies, an origin group with a standby bucket (or another regional endpoint) is the boring DR pattern for static content. Terraform state for all this lives in S3 with Dynamo locking — version the bucket, encrypt it, don’t hand-delete objects when you’re tired.
 
-- **Origin failover**: secondary origin (e.g. secondary bucket or API) via CloudFront origin group for static tier.
-- **State**: Terraform remote state (S3 + DynamoDB lock) must be protected (versioning, SSE-KMS); document restore of state before infra rebuild.
+## First 15 minutes after a page
 
-## On-call — first 15 minutes checklist
+1. Acknowledge you saw the alert — nobody likes screaming into void Slack forever.
+2. Figure out *where* it hurts: CloudFront vs ALB vs ECS vs something downstream. CloudWatch ALB metrics + ECS events + “what did we ship last” usually answer that fast.
+3. If it smells like a bad deploy, roll ECS back (`scripts/ecs-rollback.sh` with the last known-good task def ARN) before you chase ghosts in application code.
+4. Post something short in the incident channel: what’s broken, who’s looking, when you’ll update again.
 
-1. **Acknowledge** alert (PagerDuty/Opsgenie/manual thread).
-2. **Identify scope**: CDN vs ALB vs ECS vs downstream — check CloudWatch ALB 5xx, ECS deployment events, recent deploys.
-3. **Stabilize**: if deploy-related — **rollback ECS** (`scripts/ecs-rollback.sh`) or revert GitHub deploy workflow input.
-4. **Communicate**: post incident summary in `#incidents` with impact + ETA.
+Blurb you can paste (edit times):
 
-### Comms template (stub)
+> Seeing elevated 5xx on `<env>` ALB since ~HH:MM UTC. Investigating. Next note in ~15m unless we’ve fixed it.
 
-> We are investigating elevated 5xx from the staging ALB starting HH:MM UTC. Impact: optional description. Next update in 15 minutes.
-
-### Rollback steps (reference)
+Rollback reminder:
 
 ```bash
 bash scripts/ecs-rollback.sh "$CLUSTER" "$SERVICE" "$PREVIOUS_TASK_DEF_ARN"
 ```
 
-Then verify **`GET /healthz`** via ALB DNS.
+Then hit `http://<alb-dns>/healthz` yourself — don’t trust green CI alone.
 
-### Postmortem template (stub)
+## After it’s over
 
-- **Timeline** — detection, mitigation, resolution  
-- **Root cause** — technical + contributing factors  
-- **What went well / poorly**  
-- **Action items** — owner + due date  
+Short retro beats nothing: timeline, root cause (including “we shipped fast without tests”), what helped, what didn’t, action items with owners. Doesn’t need to be a novel.

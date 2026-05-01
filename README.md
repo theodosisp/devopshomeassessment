@@ -1,17 +1,18 @@
 # DevOps Home Assessment (v4.4)
 
-This repository contains **Parts 1–6** of the DevOps Home Assessment (v4.4): Terraform, CI/CD (OIDC, Trivy, semver tags), gated **deploy** workflow, ops/security/cost docs.
+Terraform for S3/CloudFront + full staging/prod stacks, GitHub Actions for build/scan/deploy, and a pile of markdown nobody reads until audit season.
 
-## Layout
+## What’s in here
 
-- `infra/modules/*`, `infra/envs/{part1,staging,prod}` — infrastructure as code
-- `docs/PART3_PIPELINE_DEBUG.md` — Part 3 pipeline RCA
-- `Dockerfile`, `app/nginx/` — **`GET /healthz` → 200**
-- `.github/workflows/ci.yml` — build, smoke test, Trivy, push **SHA + semver** tags
-- `.github/workflows/deploy.yml` — manual deploy + environment gates + `/healthz` check
-- `scripts/ecs-deploy.sh`, `scripts/ecs-rollback.sh` — ECS roll forward / rollback
-- `SECURITY.md`, `COST_NOTES.md`, `dashboards.md`, `ON-CALL.md` — Part 5–6 deliverables
-- `submission/` — Part 1 plan artifact
+Infra lives under `infra/` — modules plus `part1`, `staging`, `prod` envs. The tiny nginx container (`Dockerfile`, `app/nginx/`) serves `/healthz` so ALB checks have something to hit.
+
+Workflows: `ci.yml` builds, smoke-tests, runs Trivy, pushes tags; `deploy.yml` is manual (`workflow_dispatch`) and expects GitHub Environments if you want human gates.
+
+Scripts `ecs-deploy.sh` / `ecs-rollback.sh` wrap the boring ECS register/update dance.
+
+`SECURITY.md`, `COST_NOTES.md`, `dashboards.md`, `ON-CALL.md` are rough notes — adjust tone for your company if you fork this.
+
+`submission/` has the Part 1 plan output kept for the submission.
 
 ## Remote state (required for Part 2)
 
@@ -64,68 +65,52 @@ terraform plan -out=tfplan
 
 After apply, read outputs (ALB DNS, ECR URL, deploy role ARNs) with `terraform output`.
 
-## Part 3 — CI debug (completed)
+## Part 3 write-up
 
-See **`docs/PART3_PIPELINE_DEBUG.md`**. Set GitHub secret **`AWS_ROLE_ARN_STAGING`** from `terraform output github_deploy_role_arn_staging` before CI can assume AWS.
+See `docs/PART3_PIPELINE_DEBUG.md`. CI needs secret **`AWS_ROLE_ARN_STAGING`** from Terraform staging outputs or it’ll fail at the OIDC step.
 
-## Parts 4–6 — CI/CD, gates, docs (completed)
+## CI / deploy (Parts 4+)
 
-### CI (`ci.yml`)
+**ci.yml** — checkout, assume role via OIDC, ECR login, `docker build` from repo root, container smoke test on `/healthz`, Trivy (HIGH/CRITICAL fail the job), then on pushes to `main` tag and push both the short SHA and a `1.0.<run_number>` tag.
 
-1. Checkout → **OIDC** AWS credentials → **ECR login**
-2. **`docker build`** at repo root (Dockerfile present)
-3. **Smoke test** running container → **`curl /healthz`**
-4. **Trivy** scan (`HIGH`, `CRITICAL` fail build)
-5. On **`push` to `main`**: push image tags **`:<12-char-sha>`** and **`1.0.<run_number>`** (semver-style)
+**deploy.yml** — run manually from Actions, pick staging vs prod, paste the image tag CI printed. Uses GitHub Environments if you configure reviewers under repo settings. Rolls ECS forward with `ecs-deploy.sh`, waits for steady state, curls the ALB `/healthz`.
 
-### Deploy (`deploy.yml`)
-
-- Trigger: **`workflow_dispatch`** — choose **staging** or **production**, enter **`image_tag`** (the 12-char SHA printed by CI).
-- Uses GitHub **Environments** `staging` / `production` — add **required reviewers** under repo **Settings → Environments** for manual gates.
-- Steps: OIDC → **register task definition** (`scripts/ecs-deploy.sh`) → **wait services-stable** → **`curl` ALB `/healthz`**.
-
-### Rollback (one command)
+Rollback when something ships sideways:
 
 ```bash
 bash scripts/ecs-rollback.sh "$CLUSTER" "$SERVICE" "$PREVIOUS_TASK_DEF_ARN"
 ```
 
-### GitHub configuration checklist
+### GitHub secrets / vars you’ll fill in
 
-| Name | Type | Example source |
-|------|------|----------------|
-| `AWS_ROLE_ARN_STAGING` | Secret | `terraform output -raw github_deploy_role_arn_staging` |
-| `AWS_ROLE_ARN_PROD` | Secret | `terraform output -raw github_deploy_role_arn_prod` |
-| `ECS_CLUSTER_STAGING` | Variable | `terraform output -raw` → `ecs_cluster_name` (staging env) |
-| `ECS_SERVICE_STAGING` | Variable | service name |
-| `TASK_FAMILY_STAGING` | Variable | `devops-assessment-staging-task` |
-| `STAGING_ALB_DNS` | Variable | ALB DNS hostname (no `http://`) |
-| `ECS_CLUSTER_PRODUCTION` | Variable | prod cluster |
-| `ECS_SERVICE_PRODUCTION` | Variable | prod service |
-| `TASK_FAMILY_PRODUCTION` | Variable | `devops-assessment-prod-task` |
-| `PROD_ALB_DNS` | Variable | prod ALB DNS |
+| Name | Where |
+|------|--------|
+| `AWS_ROLE_ARN_STAGING` | Secret — `terraform output -raw github_deploy_role_arn_staging` (staging dir) |
+| `AWS_ROLE_ARN_PROD` | Secret — prod deploy role ARN |
+| `ECS_CLUSTER_STAGING`, `ECS_SERVICE_STAGING`, `TASK_FAMILY_STAGING`, `STAGING_ALB_DNS` | Variables — from staging `terraform output` |
+| Same pattern for production | Prefix `ECS_CLUSTER_PRODUCTION` etc., plus `PROD_ALB_DNS` |
 
-Replace `devops-assessment-*` prefixes if you changed `project` / `environment` in Terraform.
+If you renamed `project` / `environment` in Terraform, your cluster/service/family strings won’t match `devops-assessment-*` — adjust vars accordingly.
 
-### RDS stub
+No RDS was provisioned; `rds_identifier_stub` is just a variable placeholder.
 
-The **`rds_identifier_stub`** variables are **documentation-only** — no RDS instances are created here.
+## Why things look like this
 
-## Key decisions (tradeoffs)
+Fargate + ALB instead of babysitting EC2 — fewer moving parts for a homework-sized service. You pay a bit more per unit of compute than a tuned EC2 box would cost; you buy back weekends not patching AMIs.
 
-1. **ECS Fargate + ALB vs EC2** — Chose **Fargate** for minimal ops (no AMI patching/ASG wiring) at the cost of slightly higher unit price vs rightsized EC2. Faster to ship for an assessment; EC2 would win if we needed **always-on GPUs**, **custom kernels**, or **long-lived SSH debugging**.
+Two VPCs in one account instead of spinning a second AWS org — easier billing and IAM, weaker isolation than account boundaries. Good enough here; real prod governance might split accounts.
 
-2. **Isolation: separate VPCs vs second AWS account** — Implemented **two VPCs in one account** (`10.10.0.0/16` staging, `10.20.0.0/16` prod). Tradeoff: **simpler IAM/billing** and one OIDC provider, but **less blast-radius separation** than a second account (Organization SCPs, separate billing alarms). A second account would be next step for production governance.
+Separate ECR repos for staging and prod so nobody fat-fingers a prod deploy tag into staging’s repo by accident (or vice versa). Shared repo + discipline works too; separate repos were the lazier mental model here.
 
-3. **Separate ECR repos for staging and prod** — Tradeoff: slightly more registry overhead vs **one shared repo + tags only**. Separate repos reduce risk of **wrong-tag prod push** and simplify lifecycle policies per environment.
+WAF only on prod CloudFront — staging is cheaper and messier on purpose. Know that the staging URL is softer; don’t put secrets there.
 
-4. **WAF only in prod** — Staging skips WAF to save cost and reduce friction for iterative testing. **Risk:** staging URLs can be abused for vulnerability scanning or accidental exposure of prerelease features; mitigations include **IP allowlists**, **auth**, or **short-lived staging environments**.
+Single NAT gateway — saves ~one NAT’s worth of cash monthly; if NAT dies the private subnets lose outbound until AWS fixes the AZ. Acceptable for this repo; prod hardening might NAT per AZ.
 
-5. **Single NAT Gateway** — Keeps cost down; tradeoff is **AZ redundancy** for outbound traffic (NAT is a single path). Production hardening might use **NAT per AZ**.
+OIDC provider gets created during prod Terraform apply once per account; staging just attaches another IAM role to the same GitHub trust. That’s an AWS limitation, not something we invented.
 
-6. **GitHub OIDC provider created once in prod** — AWS allows **one URL** per account for `token.actions.githubusercontent.com`. Staging reuses it with a **second deploy role** scoped to staging ECR/ECS only.
+## Links I kept open
 
-## References
+Terraform AWS provider docs, and the WAF + CloudFront region quirk (ACLs for CloudFront live in `us-east-1` even if the rest of the stack is in Frankfurt or wherever).
 
 - [Terraform AWS provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [WAF for CloudFront (us-east-1)](https://docs.aws.amazon.com/waf/latest/developerguide/how-aws-waf-works.html)
+- [WAF / CloudFront](https://docs.aws.amazon.com/waf/latest/developerguide/how-aws-waf-works.html)

@@ -1,36 +1,40 @@
-# Cost & performance (Part 5)
+# Cost / perf scribbles
 
-## ALB vs API Gateway vs CloudFront-only (small service)
+Quick comparison we’d actually have in a design doc — nothing authoritative.
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **ALB + ECS** | Native HTTP/TCP health checks, sticky sessions possible, simple ECS attach | Hourly ALB cost + LCUs |
-| **API Gateway + Lambda/ECS** | Fine-grained auth, usage billing | Cold starts / complexity for tiny APIs |
-| **CloudFront-only** | Cheapest edge — great for **static** assets | Not a substitute for dynamic API routing without Lambda@Edge / Functions URLs |
+## How traffic hits the app
 
-**Choice here**: **ALB + ECS Fargate** for the container API (`/healthz`) — simplest path for ECS health checks and aligns with assessment diagram.
+**ALB + ECS** — what we built. You pay for the load balancer hour-by-hour plus LCU usage. Health checks are straightforward and ECS hooks up without gymnastics. Fine for a small API behind `/healthz`.
 
-## Autoscaling (default policy — stub)
+**API Gateway in front of Lambda or ECS** — nice when you care about per-request billing or JWT validation at the edge. Adds complexity (and cold starts if you go Lambda) that we didn’t need for this repo.
 
-- **ECS**: enable target tracking on **ALB target group** request count per task / CPU — start at **target 70% CPU** or **60 RPS/task** after metrics baseline (Terraform `aws_appautoscaling_*` not committed — stub).
-- **Scale-out cooldown** 60s, **scale-in** 300s to avoid flapping.
+**CloudFront-only** — great when it’s mostly static files. Not really a replacement for a container API unless you’re okay bolting Lambda@Edge / weird routing on top.
 
-## Static asset caching
+So ALB + Fargate it is.
 
-- CloudFront uses **managed caching** policy on static behaviour; version filenames (`app.v123.js`) for safe long TTLs.
+## Autoscaling
 
-## Daily budget guardrail
+Didn’t bake autoscaling resources into Terraform yet — call it a stub. When metrics exist, target-tracking on CPU (~70%) or requests-per-task is the boring default. Cooldowns around 60s scale-out / 300s scale-in so it doesn’t flap every traffic blip.
 
-1. **AWS Budgets**: monthly cost budget with email/SNS alert at e.g. **80%** and **100%**.
-2. **Pipeline toggle**: add GitHub Environment **`production`** protection rule “pause deploys” manually when budget alarm fires; optional AWS EventBridge → disable pipeline webhook (future).
+## Caching static assets
 
-### Budget stub (CLI — replace account/email)
+CloudFront side uses AWS managed cache policies for the CDN behaviour. For JS/CSS, ship hashed filenames (`app.a1b2c3.js`) so you can crank TTLs without cache poisoning scare stories.
+
+## Money alarms
+
+Budgets in AWS (monthly cap + SNS email at ~80% and 100%) beat staring at the billing console on Sundays.
+
+If finance calls panicking, flip the production GitHub Environment to “nobody deploys until we talk” — low-tech but works. Wiring EventBridge to auto-disable webhooks is overkill until it isn’t.
+
+### Budget CLI skeleton
+
+Replace account IDs / emails before running:
 
 ```bash
 aws budgets create-budget --account-id YOUR_ACCOUNT_ID --budget file://budget.json --notifications-with-subscribers file://budget-notifications.json
 ```
 
-**budget.json** (example skeleton):
+Example `budget.json` shape:
 
 ```json
 {

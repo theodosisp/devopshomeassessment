@@ -1,21 +1,19 @@
-# Observability — dashboards & alerts (Part 5)
+# Monitoring sketch
 
-**SLO targets (from assessment)**
+Rough targets from the brief:
 
-- **Availability**: monthly API ≥ **99.9%** (measure from ALB **HTTPCode_Target_5XX_Count** vs request count).
-- **Latency**: **P95 ≤ 300 ms** on **`GET /healthz`** through ALB.
+- Keep monthly availability roughly **99.9%** — we’d measure off ALB (target 5xx vs accepted requests), not gut feeling.
+- **`GET /healthz`** through the ALB should stay under ~**300 ms at P95** once there’s real traffic to measure.
 
----
+## Dashboard
 
-## One dashboard (CloudWatch — JSON stub)
-
-Save as `cw-dashboard-devops-assessment.json` and create:
+Below is a barebones CloudWatch dashboard JSON — swap `REPLACE` with your actual ALB dimension (`LoadBalancer` full name). Save locally then:
 
 ```bash
 aws cloudwatch put-dashboard --dashboard-name DevOpsAssessment-API --dashboard-body file://cw-dashboard-devops-assessment.json
 ```
 
-**Minimal stub** (edit `LoadBalancer` dimension / region):
+Two widgets: P95 latency and 5xx count on the ALB. Enough to stare at during a deploy.
 
 ```json
 {
@@ -28,7 +26,7 @@ aws cloudwatch put-dashboard --dashboard-name DevOpsAssessment-API --dashboard-b
         ],
         "period": 60,
         "region": "eu-central-1",
-        "title": "ALB /healthz P95 (staging example)",
+        "title": "ALB /healthz P95 (staging — rename me)",
         "yAxis": { "left": { "min": 0 } }
       }
     },
@@ -40,44 +38,26 @@ aws cloudwatch put-dashboard --dashboard-name DevOpsAssessment-API --dashboard-b
         ],
         "period": 60,
         "region": "eu-central-1",
-        "title": "Target 5xx (staging example)"
+        "title": "Target 5xx"
       }
     }
   ]
 }
 ```
 
----
+## Alarms worth wiring
 
-## Three alert rules (stubs)
+**SLO-ish composite** — CloudWatch composite alarm tying together “too many 5xx” and “latency blew past budget”. Exact metric math depends how you define error budget; starting point is two underlying alarms then OR them.
 
-### 1) SLO burn (Composite Alarm skeleton)
-
-Use **CloudWatch Metrics Insights** or separate alarms on **error budget** (requires custom metric math). Stub:
+Snippet idea (you’ll fix ARNs / alarm names):
 
 ```bash
-# Pseudocode: combine 5xx rate + latency alarm via Composite Alarm when either breaching
 aws cloudwatch put-composite-alarm \
   --alarm-name devops-assessment-slo-burn \
   --alarm-rule "ALARM(high-5xx) OR ALARM(high-latency-p95)" \
   --alarm-actions arn:aws:sns:eu-central-1:ACCOUNT:devops-alerts
 ```
 
-### 2) Five-minute error rate > 2%
+**5-minute error budget hack** — alarm when bad responses spike relative to traffic. Usually needs `MetricMath` in a JSON file for `--metrics`; I didn’t check in a working example because dimensions differ per account.
 
-```bash
-aws cloudwatch put-metric-alarm \
-  --alarm-name devops-assessment-error-rate-5m \
-  --alarm-description "Target 5xx / requests > 2% over 5m (tune MetricMath)" \
-  --metrics file://error-rate-metric-math.json \
-  --evaluation-periods 1 \
-  --threshold 2 \
-  --comparison-operator GreaterThanThreshold \
-  --alarm-actions arn:aws:sns:eu-central-1:ACCOUNT:devops-alerts
-```
-
-*`error-rate-metric-math.json`* must define `Expression` for ratio — replace `ACCOUNT`, SNS ARN, and dimensions.
-
-### 3) Daily cost threshold
-
-Prefer **AWS Budgets** + SNS (see `COST_NOTES.md`). CloudWatch billing metrics are account-level and delayed — budgets are clearer for “daily cost” guardrails.
+**Cost** — billing metrics in CloudWatch lag and hurt my brain. Prefer AWS Budgets + SNS (see `COST_NOTES.md`) for “we spent too much today” vibes.
